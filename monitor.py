@@ -69,13 +69,17 @@ def check_domain_status() -> dict | None:
 #  2. مقارنة الأسعار
 # ══════════════════════════════════════════════
 REGISTRARS = [
-    ("Porkbun",   9.73,  f"https://porkbun.com/checkout/search?q={DOMAIN}"),
+    # NameSilo أولاً — الأرخص تسجيلاً وتجديداً بسعر ثابت
     ("NameSilo",  8.99,  f"https://www.namesilo.com/domain/search-domains?query={DOMAIN}"),
     ("Spaceship",  9.00, f"https://www.spaceship.com/domain-checker/?search={DOMAIN}"),
+    ("Porkbun",   9.73,  f"https://porkbun.com/checkout/search?q={DOMAIN}"),
     ("Dynadot",   9.99,  f"https://www.dynadot.com/domain/search.html?domain={DOMAIN}"),
     ("Namecheap", 9.98,  f"https://www.namecheap.com/domains/registration/results/?domain={DOMAIN}"),
     ("GoDaddy",  14.99,  f"https://www.godaddy.com/domainsearch/find?domainToCheck={DOMAIN}"),
 ]
+
+# المسجّل المفضّل — يُبرز في الإشعار
+RECOMMENDED = "NameSilo"
 
 def get_live_godaddy_price() -> float | None:
     try:
@@ -215,10 +219,17 @@ def main() -> None:
         cheapest = prices[0]
 
         price_lines = "\n".join(
-            f"{'>>> ' if i == 0 else '    '}{p['name']:10} ${p['price']:.2f}"
-            for i, p in enumerate(prices)
+            f"{'>>> ' if p['name'] == RECOMMENDED else '    '}{p['name']:10} ${p['price']:.2f}/yr"
+            for p in prices
         )
-        buy_links = "\n".join(f"  {p['name']}: {p['url']}" for p in prices[:3])
+        recommended = next(p for p in prices if p["name"] == RECOMMENDED)
+        buy_links = (
+            f"  {recommended['name']} (موصى به): {recommended['url']}\n" +
+            "\n".join(
+                f"  {p['name']}: {p['url']}"
+                for p in prices if p["name"] != RECOMMENDED
+            )[:2]
+        )
 
         bought = False
         if AUTO_BUY and MAX_PRICE > 0 and cheapest["price"] <= MAX_PRICE:
@@ -239,7 +250,8 @@ def main() -> None:
                 f"النطاق {DOMAIN} اصبح متاحاً الآن!\n\n"
                 f"مقارنة الاسعار (من الارخص):\n"
                 f"{price_lines}\n\n"
-                f"روابط مباشرة:\n{buy_links}\n\n"
+                f">>> الافضل: NameSilo - سعر ثابت $8.99/سنة <<<\n"
+                f"{recommended['url']}\n\n"
                 f"سجّله بسرعة قبل ان ياخذه احد!",
                 priority="urgent",
             )
