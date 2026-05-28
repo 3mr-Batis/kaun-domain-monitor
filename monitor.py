@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════╗
-║   🌐  Domain Monitor — kaun.com              ║
-║   مراقب نطاق تلقائي | يعمل كل يوم مجاناً   ║
-╚══════════════════════════════════════════════╝
+Domain Monitor - kaun.com
+مراقب نطاق تلقائي | يعمل كل يوم مجاناً على GitHub Actions
 """
 
 import requests
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ══════════════════════════════════════════════
 #  تحميل الإعدادات
@@ -26,55 +24,65 @@ NC_API_KEY    = os.environ.get("NAMECHEAP_API_KEY", "")
 NC_API_USER   = os.environ.get("NAMECHEAP_API_USER", "")
 NC_CLIENT_IP  = os.environ.get("NAMECHEAP_CLIENT_IP", "")
 
+HEADERS = {"User-Agent": "kaun-domain-monitor/2.0"}
+
 
 # ══════════════════════════════════════════════
-#  1. فحص حالة النطاق عبر RDAP (مجاني بلا مفتاح)
+#  1. فحص حالة النطاق
+#     - محاولة أولى  : Verisign RDAP (السلطة الرسمية لـ .com)
+#     - محاولة ثانية : rdap.org
 # ══════════════════════════════════════════════
+RDAP_SOURCES = [
+    f"https://rdap.verisign.com/com/v1/domain/{DOMAIN}",
+    f"https://rdap.org/domain/{DOMAIN}",
+]
+
 def check_domain_status() -> dict | None:
-    """يرجع dict فيه status و expiry، أو None عند الخطأ."""
-    try:
-        r = requests.get(
-            f"https://rdap.org/domain/{DOMAIN}",
-            timeout=15,
-            headers={"User-Agent": "kaun-domain-monitor/1.0"}
-        )
-        if r.status_code == 404:
-            return {"status": "AVAILABLE", "expiry": None}
+    for url in RDAP_SOURCES:
+        try:
+            r = requests.get(url, timeout=25, headers=HEADERS)
 
-        data   = r.json()
-        expiry = next(
-            (e["eventDate"][:10]
-             for e in data.get("events", [])
-             if e.get("eventAction") == "expiration"),
-            None
-        )
-        return {"status": "REGISTERED", "expiry": expiry}
+            if r.status_code == 404:
+                return {"status": "AVAILABLE", "expiry": None}
 
-    except Exception as e:
-        print(f"[RDAP ERROR] {e}")
-        return None
+            if r.status_code != 200:
+                continue
+
+            data   = r.json()
+            expiry = next(
+                (e["eventDate"][:10]
+                 for e in data.get("events", [])
+                 if e.get("eventAction") == "expiration"),
+                None,
+            )
+            return {"status": "REGISTERED", "expiry": expiry}
+
+        except requests.exceptions.Timeout:
+            print(f"[RDAP] Timeout: {url}")
+        except Exception as e:
+            print(f"[RDAP] Error ({url}): {e}")
+
+    return None   # كلا المصدرين فشلا
 
 
 # ══════════════════════════════════════════════
-#  2. مقارنة الأسعار من مسجّلين مختلفين
+#  2. مقارنة الأسعار
 # ══════════════════════════════════════════════
 REGISTRARS = [
-    # (الاسم, السعر الثابت لـ .com, رابط الشراء المباشر)
     ("Porkbun",   9.73,  f"https://porkbun.com/checkout/search?q={DOMAIN}"),
     ("NameSilo",  8.99,  f"https://www.namesilo.com/domain/search-domains?query={DOMAIN}"),
-    ("Dynadot",   9.99,  f"https://www.dynadot.com/domain/search.html?domain={DOMAIN}"),
     ("Spaceship",  9.00, f"https://www.spaceship.com/domain-checker/?search={DOMAIN}"),
+    ("Dynadot",   9.99,  f"https://www.dynadot.com/domain/search.html?domain={DOMAIN}"),
     ("Namecheap", 9.98,  f"https://www.namecheap.com/domains/registration/results/?domain={DOMAIN}"),
     ("GoDaddy",  14.99,  f"https://www.godaddy.com/domainsearch/find?domainToCheck={DOMAIN}"),
 ]
 
 def get_live_godaddy_price() -> float | None:
-    """يحاول جلب سعر GoDaddy الحقيقي عبر API العام."""
     try:
         r = requests.get(
             f"https://api.godaddy.com/v1/domains/available?domain={DOMAIN}",
             headers={"accept": "application/json"},
-            timeout=8
+            timeout=8,
         )
         data = r.json()
         if data.get("available") and "price" in data:
@@ -84,16 +92,11 @@ def get_live_godaddy_price() -> float | None:
     return None
 
 def compare_prices() -> list[dict]:
-    """يرجع قائمة مرتّبة من الأرخص للأغلى."""
-    results = []
-
-    # تحديث سعر GoDaddy مباشرة
-    gd_live = get_live_godaddy_price()
-
+    gd_live  = get_live_godaddy_price()
+    results  = []
     for name, base_price, url in REGISTRARS:
         price = gd_live if (name == "GoDaddy" and gd_live) else base_price
         results.append({"name": name, "price": price, "url": url})
-
     results.sort(key=lambda x: x["price"])
     return results
 
@@ -102,17 +105,9 @@ def compare_prices() -> list[dict]:
 #  3. شراء تلقائي عبر Namecheap API (اختياري)
 # ══════════════════════════════════════════════
 def auto_buy_namecheap() -> bool:
-    """
-    يشتري النطاق تلقائياً عبر Namecheap API.
-    يحتاج: NAMECHEAP_API_KEY + NAMECHEAP_API_USER + NAMECHEAP_CLIENT_IP
-    في GitHub Secrets.
-    """
     if not all([NC_API_KEY, NC_API_USER, NC_CLIENT_IP]):
-        print("[AUTO-BUY] بيانات Namecheap API غير مكتملة — تم التخطي")
+        print("[AUTO-BUY] بيانات Namecheap API غير مكتملة")
         return False
-
-    sld, tld = DOMAIN.rsplit(".", 1)
-
     try:
         r = requests.get(
             "https://api.namecheap.com/xml.response",
@@ -124,23 +119,21 @@ def auto_buy_namecheap() -> bool:
                 "Command":   "namecheap.domains.create",
                 "DomainName": DOMAIN,
                 "Years":     1,
-                # بيانات التسجيل — سيتم أخذها من الحساب
-                "RegistrantFirstName": NC_API_USER,
-                "RegistrantLastName":  "Auto",
-                "RegistrantAddress1":  "N/A",
-                "RegistrantCity":      "N/A",
-                "RegistrantCountry":   "SA",
-                "RegistrantPhone":     "+966.500000000",
-                "RegistrantEmailAddress": "admin@example.com",
+                "RegistrantFirstName":     NC_API_USER,
+                "RegistrantLastName":      "Monitor",
+                "RegistrantAddress1":      "N/A",
+                "RegistrantCity":          "N/A",
+                "RegistrantCountry":       "SA",
+                "RegistrantPhone":         "+966.500000000",
+                "RegistrantEmailAddress":  "admin@example.com",
                 "RegistrantStateProvince": "N/A",
-                "RegistrantPostalCode": "00000",
+                "RegistrantPostalCode":    "00000",
             },
-            timeout=20
+            timeout=25,
         )
-        success = "<DomainCreateResult" in r.text and 'Registered="true"' in r.text
-        print(f"[AUTO-BUY] {'✅ نجح الشراء!' if success else '❌ فشل الشراء'}")
-        return success
-
+        ok = "<DomainCreateResult" in r.text and 'Registered="true"' in r.text
+        print(f"[AUTO-BUY] {'Success' if ok else 'Failed'}")
+        return ok
     except Exception as e:
         print(f"[AUTO-BUY ERROR] {e}")
         return False
@@ -148,24 +141,26 @@ def auto_buy_namecheap() -> bool:
 
 # ══════════════════════════════════════════════
 #  4. الإشعارات عبر ntfy.sh
+#     ملاحظة: HTTP headers تدعم ASCII فقط
+#     لذا العنوان بالإنجليزية والمحتوى بالعربية في الـ body
 # ══════════════════════════════════════════════
-def notify(title: str, body: str, priority: str = "high") -> None:
+def notify(title_en: str, body_ar: str, priority: str = "high") -> None:
     if not NTFY_TOPIC:
-        print(f"[NOTIFY] ⚠️  NTFY_TOPIC غير محدد في Secrets\nالعنوان: {title}\n{body}")
+        print(f"[NOTIFY] NTFY_TOPIC not set\n  Title: {title_en}\n  Body: {body_ar[:80]}")
         return
     try:
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=body.encode("utf-8"),
+            data=body_ar.encode("utf-8"),
             headers={
-                "Title":        title,
+                "Title":        title_en,        # ASCII only
                 "Priority":     priority,
                 "Tags":         "globe_with_meridians,bell",
                 "Content-Type": "text/plain; charset=utf-8",
             },
-            timeout=10,
+            timeout=12,
         )
-        print(f"[NOTIFY] ✅ أُرسل: {title}")
+        print(f"[NOTIFY] Sent: {title_en}")
     except Exception as e:
         print(f"[NOTIFY ERROR] {e}")
 
@@ -181,7 +176,7 @@ def load_state() -> dict:
         return {"status": "UNKNOWN", "expiry": None, "last_checked": None}
 
 def save_state(state: dict) -> None:
-    state["last_checked"] = datetime.utcnow().isoformat() + "Z"
+    state["last_checked"] = datetime.now(timezone.utc).isoformat()
     with open("domain_state.json", "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
@@ -190,53 +185,66 @@ def save_state(state: dict) -> None:
 #  6. المنطق الرئيسي
 # ══════════════════════════════════════════════
 def main() -> None:
-    sep = "═" * 52
+    sep = "=" * 54
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{sep}")
-    print(f"  🔍 فحص {DOMAIN} — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"  Domain Monitor: {DOMAIN}  |  {now}")
     print(sep)
 
     current  = check_domain_status()
     previous = load_state()
 
     if current is None:
-        notify("⚠️ خطأ في المراقبة", f"فشل فحص {DOMAIN} — سيعاد المحاولة غداً", priority="default")
-        sys.exit(1)
+        # فشل الفحص — نرسل تنبيه ونخرج بنجاح (لا نفشل الـ workflow)
+        notify(
+            "Monitor Warning",
+            f"فشل فحص {DOMAIN} — سيُعاد المحاولة غداً تلقائياً",
+            priority="low",
+        )
+        print("  [WARNING] Check failed — will retry tomorrow")
+        sys.exit(0)   # exit 0 حتى لا يُعلّم الـ workflow بالفشل
 
-    print(f"  الحالة السابقة : {previous.get('status')} | {previous.get('expiry')}")
-    print(f"  الحالة الحالية : {current['status']} | {current.get('expiry')}")
+    print(f"  Previous : {previous.get('status')} | expiry={previous.get('expiry')}")
+    print(f"  Current  : {current['status']} | expiry={current.get('expiry')}")
     print(sep)
 
-    # ── الحالة 1: النطاق أصبح متاحاً 🎉 ──────────────
+    # ── الحالة 1: النطاق أصبح متاحاً ─────────────────
     if current["status"] == "AVAILABLE" and previous["status"] != "AVAILABLE":
-        prices  = compare_prices()
+
+        prices   = compare_prices()
         cheapest = prices[0]
 
         price_lines = "\n".join(
-            f"  {'👑' if i == 0 else '  '} {p['name']:10} ${p['price']:.2f}  →  {p['url']}"
+            f"{'>>> ' if i == 0 else '    '}{p['name']:10} ${p['price']:.2f}"
             for i, p in enumerate(prices)
         )
+        buy_links = "\n".join(f"  {p['name']}: {p['url']}" for p in prices[:3])
 
         bought = False
         if AUTO_BUY and MAX_PRICE > 0 and cheapest["price"] <= MAX_PRICE:
-            print(f"\n[AUTO-BUY] السعر ${cheapest['price']} ≤ الحد ${MAX_PRICE} — جاري الشراء...")
-            bought = auto_buy_namecheap()
+            print(f"\n  [AUTO-BUY] ${cheapest['price']} <= limit ${MAX_PRICE} — buying...")
+            bought = auto_buy_namechaep()
 
         if bought:
             notify(
-                f"✅ تم شراء {DOMAIN}!",
-                f"تم شراء النطاق تلقائياً عبر Namecheap بسعر ${cheapest['price']}/سنة",
+                "BOUGHT! kaun.com is yours",
+                f"تم شراء {DOMAIN} تلقائياً!\n"
+                f"المسجّل: Namecheap\n"
+                f"السعر: ${cheapest['price']}/سنة",
                 priority="urgent",
             )
         else:
-            body = (
-                f"النطاق {DOMAIN} أصبح متاحاً الآن!\n\n"
-                f"💰 مقارنة الأسعار (من الأرخص):\n"
+            notify(
+                "AVAILABLE NOW: kaun.com",
+                f"النطاق {DOMAIN} اصبح متاحاً الآن!\n\n"
+                f"مقارنة الاسعار (من الارخص):\n"
                 f"{price_lines}\n\n"
-                f"⚡ أسرع وسجّله قبل أن يسبقك أحد!"
+                f"روابط مباشرة:\n{buy_links}\n\n"
+                f"سجّله بسرعة قبل ان ياخذه احد!",
+                priority="urgent",
             )
-            notify(f"🎉 {DOMAIN} متاح!", body, priority="urgent")
 
-    # ── الحالة 2: المالك جدّد النطاق 🔄 ───────────────
+    # ── الحالة 2: المالك جدّد النطاق ─────────────────
     elif (
         current["status"] == "REGISTERED"
         and previous.get("expiry")
@@ -244,17 +252,18 @@ def main() -> None:
         and current["expiry"] != previous["expiry"]
     ):
         notify(
-            f"🔄 {DOMAIN} تم تجديده",
-            f"المالك جدّد النطاق — انتهت فرصة الانتظار قريباً\n\n"
-            f"التاريخ القديم : {previous['expiry']}\n"
-            f"التاريخ الجديد : {current['expiry']}\n\n"
-            f"نصيحة: ابدأ Backorder على SnapNames الآن.",
+            "kaun.com was RENEWED",
+            f"المالك جدّد النطاق — انتهت فرصة الانتظار\n\n"
+            f"التاريخ القديم: {previous['expiry']}\n"
+            f"التاريخ الجديد: {current['expiry']}\n\n"
+            f"نصيحة: ابدأ Backorder على SnapNames الآن\n"
+            f"https://www.snapnames.com/searchDomain.action?domain={DOMAIN}",
             priority="high",
         )
 
     # ── الحالة 3: لا تغيير ────────────────────────────
     else:
-        print(f"  ✅ مسجّل — تاريخ الانتهاء: {current.get('expiry')} — لا تغيير")
+        print(f"  No change — still registered until {current.get('expiry')}")
 
     save_state(current)
     print(f"{sep}\n")
