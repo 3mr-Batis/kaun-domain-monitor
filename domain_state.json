@@ -1,5 +1,5 @@
 {
-  "status": "UNKNOWN",
-  "expiry": null,
-  "last_checked": null
+  "status": "REGISTERED",
+  "expiry": "2027-11-01",
+  "last_checked": "2026-05-28T22:57:29.047230+00:00"
 }
