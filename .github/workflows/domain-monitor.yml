@@ -1,0 +1,47 @@
+name: 🌐 Domain Monitor — kaun.com
+
+on:
+  schedule:
+    # كل يوم الساعة 7:00 صباحاً بتوقيت الرياض (04:00 UTC)
+    - cron: '0 4 * * *'
+
+  # تشغيل يدوي من GitHub في أي وقت
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: write   # لحفظ domain_state.json تلقائياً
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 🔍 Run domain monitor
+        env:
+          NTFY_TOPIC:           ${{ secrets.NTFY_TOPIC }}
+          # ── اختياري: للشراء التلقائي عبر Namecheap ──
+          NAMECHEAP_API_KEY:    ${{ secrets.NAMECHEAP_API_KEY }}
+          NAMECHEAP_API_USER:   ${{ secrets.NAMECHEAP_API_USER }}
+          NAMECHEAP_CLIENT_IP:  ${{ secrets.NAMECHEAP_CLIENT_IP }}
+        run: python monitor.py
+
+      - name: 💾 Save updated state to repo
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update domain_state.json [skip ci]"
+          file_pattern:   domain_state.json

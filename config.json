@@ -1,0 +1,9 @@
+{
+  "domain": "kaun.com",
+
+  "auto_buy": false,
+  "max_buy_price_usd": 0,
+
+  "_comment_auto_buy": "اجعل auto_buy = true وحدد max_buy_price_usd اذا تريد الشراء التلقائي عبر Namecheap API",
+  "_comment_price":    "مثال: max_buy_price_usd = 15 يعني اشتري فقط اذا السعر 15 دولار او اقل"
+}
